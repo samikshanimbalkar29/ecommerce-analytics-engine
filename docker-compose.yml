@@ -1,0 +1,32 @@
+# Two-node Cassandra cluster (Tier 3). Needs ~2 GB free RAM.
+# Start:  docker compose up -d     (node 2 joins after node 1 is healthy; allow 2-3 minutes)
+# Check:  docker exec cass1 nodetool status   -> both nodes should show "UN"
+services:
+  cassandra1:
+    image: cassandra:4.1
+    container_name: cass1
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: EcommerceCluster
+      CASSANDRA_SEEDS: cassandra1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+
+  cassandra2:
+    image: cassandra:4.1
+    container_name: cass2
+    depends_on:
+      cassandra1:
+        condition: service_healthy
+    environment:
+      CASSANDRA_CLUSTER_NAME: EcommerceCluster
+      CASSANDRA_SEEDS: cassandra1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M

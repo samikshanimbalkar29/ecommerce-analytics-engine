@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-Commerce Analytics Engine</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6fa; --card: #ffffff; --text: #1d2433; --muted: #667085; --line: #e4e7ec;
+    --accent: #2f5bea; --warn-bg: #fff4e5; --warn-text: #8a4b00; --ok: #12805c; --bad: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1420; --card: #181f2e; --text: #e8ecf4; --muted: #9aa5b8; --line: #2a3347;
+            --accent: #7b9bff; --warn-bg: #3a2a10; --warn-text: #ffcf8a; --ok: #4cd1a1; --bad: #ff8a7a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 28px; display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline;
+           justify-content: space-between; }
+  h1 { margin: 0; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 0 28px 40px; max-width: 1720px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: center; margin-bottom: 16px; }
+  .controls label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  select, input[type=range] { accent-color: var(--accent); }
+  select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 14px;
+           font-size: 13px; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: .5; cursor: wait; }
+  .banner { display: none; margin-bottom: 16px; padding: 12px 16px; border-radius: 10px; font-size: 14px; }
+  .banner.warn { display: block; background: var(--warn-bg); color: var(--warn-text); }
+  .banner.err { display: block; background: var(--warn-bg); color: var(--bad); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 16px; }
+  .kpi .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .value { font-size: 26px; font-weight: 600; margin-top: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; }
+  .chart-box { position: relative; height: 280px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .bench-actions { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>E-Commerce Analytics Engine</h1>
+    <div class="sub">Parallel analytics over a region-partitioned Cassandra cluster &middot; 3-tier architecture</div>
+  </div>
+  <div class="sub" id="backendBadge">Connecting to Cassandra&hellip;</div>
+</header>
+
+<main>
+  <div class="card controls">
+    <label>Query mode
+      <select id="mode">
+        <option value="parallel">Parallel (async)</option>
+        <option value="sequential">Sequential</option>
+      </select>
+    </label>
+    <label>Simulated network latency
+      <input id="delay" type="range" min="0" max="1000" step="50" value="0">
+      <span id="delayVal">0 ms</span>
+    </label>
+    <div id="downBox" style="display:flex;gap:14px;flex-wrap:wrap"></div>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <div id="banner" class="banner" role="status"></div>
+
+  <section class="kpis">
+    <div class="card kpi"><div class="label">Total sales</div><div class="value" id="kSales">&ndash;</div></div>
+    <div class="card kpi"><div class="label">Total orders</div><div class="value" id="kOrders">&ndash;</div></div>
+    <div class="card kpi"><div class="label">Avg order value</div><div class="value" id="kAov">&ndash;</div></div>
+    <div class="card kpi"><div class="label">Query time (summary)</div><div class="value" id="kTime">&ndash;</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="card"><h2>Sales by region</h2><div class="chart-box"><canvas id="cRegion"></canvas></div></div>
+    <div class="card"><h2>Sales by category</h2><div class="chart-box"><canvas id="cCategory"></canvas></div></div>
+    <div class="card"><h2>Daily sales (last 30 days with orders)</h2><div class="chart-box"><canvas id="cDaily"></canvas></div></div>
+    <div class="card">
+      <h2>Sequential vs parallel</h2>
+      <div class="bench-actions">
+        <button id="runBench" class="secondary">Run benchmark</button>
+        <span class="sub" id="benchText">Uses the latency slider above.</span>
+      </div>
+      <div class="chart-box" style="height:220px"><canvas id="cBench"></canvas></div>
+    </div>
+    <div class="card" style="grid-column: 1 / -1">
+      <h2>Cassandra partition health</h2>
+      <table>
+        <thead><tr><th>Region</th><th>Status</th><th>Attempts</th><th>Time</th><th>Orders</th><th>Sales</th></tr></thead>
+        <tbody id="statusBody"></tbody>
+      </table>
+      <div class="note">Timeouts, retries with exponential backoff and partial results are handled in the API tier.
+        Use fault simulation to verify retries and partial results.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const PALETTE = ["#2f5bea", "#e8590c", "#12a37f", "#a855f7", "#d6336c", "#f59f00"];
+const inr = n => "\u20B9" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+const $ = id => document.getElementById(id);
+let regions = [];
+const charts = {};
+
+function mkChart(id, cfg) { charts[id] = new Chart($(id), cfg); }
+const baseOpts = { responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: getComputedStyle(document.documentElement).getPropertyValue("--muted") } } },
+  scales: {} };
+
+function axisOpts(stacked, fmt) {
+  const muted = getComputedStyle(document.documentElement).getPropertyValue("--muted");
+  const grid = getComputedStyle(document.documentElement).getPropertyValue("--line");
+  return { x: { stacked, ticks: { color: muted }, grid: { color: grid } },
+           y: { stacked, ticks: { color: muted, callback: fmt }, grid: { color: grid } } };
+}
+
+function initCharts() {
+  const money = v => inr(v);
+  mkChart("cRegion", { type: "bar", data: { labels: [], datasets: [{ data: [], backgroundColor: PALETTE }] },
+    options: { ...baseOpts, plugins: { legend: { display: false } }, scales: axisOpts(false, money) } });
+  mkChart("cCategory", { type: "bar", data: { labels: [], datasets: [] },
+    options: { ...baseOpts, scales: axisOpts(true, money) } });
+  mkChart("cDaily", { type: "line", data: { labels: [], datasets: [] },
+    options: { ...baseOpts, elements: { point: { radius: 2 } }, scales: axisOpts(false, money) } });
+  mkChart("cBench", { type: "bar", data: { labels: ["Sequential", "Parallel"],
+    datasets: [{ data: [0, 0], backgroundColor: ["#e8590c", "#12a37f"] }] },
+    options: { ...baseOpts, indexAxis: "y", plugins: { legend: { display: false } },
+      scales: axisOpts(false, v => v + " ms") } });
+}
+
+function params(extra = {}) {
+  const down = [...document.querySelectorAll("#downBox input:checked")].map(i => i.value).join(",");
+  const p = new URLSearchParams({ mode: $("mode").value, delay: $("delay").value, down, ...extra });
+  return p.toString();
+}
+
+async function api(path, extra) {
+  const res = await fetch(`/api/${path}?${params(extra)}`);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error + (body.hint ? "  \u2014 " + body.hint : ""));
+  return body;
+}
+
+function showBanner(warnings, error) {
+  const b = $("banner");
+  b.className = "banner";
+  if (error) { b.className = "banner err"; b.textContent = error; }
+  else if (warnings.length) { b.className = "banner warn"; b.textContent = "\u26A0 " + warnings.join(" | "); }
+}
+
+async function refresh() {
+  $("refresh").disabled = true;
+  try {
+    const [sum, cat, day] = await Promise.all([api("summary"), api("categories"), api("daily")]);
+    showBanner([...new Set([...sum.meta.warnings, ...cat.meta.warnings, ...day.meta.warnings])]);
+
+    $("kSales").textContent = inr(sum.total_sales);
+    $("kOrders").textContent = sum.total_orders.toLocaleString("en-IN");
+    $("kAov").textContent = inr(sum.avg_order_value);
+    $("kTime").textContent = sum.meta.elapsed_ms + " ms";
+
+    const names = Object.keys(sum.by_region);
+    charts.cRegion.data.labels = names;
+    charts.cRegion.data.datasets[0].data = names.map(r => sum.by_region[r].sales);
+    charts.cRegion.update();
+
+    charts.cCategory.data.labels = cat.categories;
+    charts.cCategory.data.datasets = cat.regions.map(r => ({
+      label: r, data: cat.series[r], backgroundColor: PALETTE[regions.indexOf(r) % PALETTE.length] }));
+    charts.cCategory.update();
+
+    charts.cDaily.data.labels = day.days;
+    charts.cDaily.data.datasets = Object.keys(day.series).map(r => ({
+      label: r, data: day.series[r], tension: .25, borderColor: PALETTE[regions.indexOf(r) % PALETTE.length],
+      backgroundColor: PALETTE[regions.indexOf(r) % PALETTE.length] }));
+    charts.cDaily.update();
+
+    const body = $("statusBody");
+    body.replaceChildren();
+    for (const r of regions) {
+      const info = sum.meta.regions[r] || {}, data = sum.by_region[r];
+      const tr = document.createElement("tr");
+      const cells = [r, info.status === "ok" ? "OK" : "FAILED", info.attempts, info.ms + " ms",
+                     data ? data.orders.toLocaleString("en-IN") : "\u2013", data ? inr(data.sales) : "\u2013"];
+      cells.forEach((t, i) => {
+        const td = document.createElement("td");
+        td.textContent = t;
+        if (i === 1) td.className = info.status === "ok" ? "ok" : "bad";
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    }
+  } catch (e) {
+    showBanner([], e.message);
+  } finally {
+    $("refresh").disabled = false;
+  }
+}
+
+async function runBenchmark() {
+  $("runBench").disabled = true;
+  $("benchText").textContent = "Running\u2026";
+  try {
+    const res = await fetch(`/api/benchmark?runs=5&delay=${$("delay").value}`);
+    const b = await res.json();
+    if (!res.ok) throw new Error(b.error);
+    charts.cBench.data.datasets[0].data = [b.sequential.avg_ms, b.parallel.avg_ms];
+    charts.cBench.update();
+    $("benchText").textContent =
+      `Parallel is ${b.speedup}\u00D7 faster (avg of ${b.runs} runs, ${b.regions} regions, ${b.delay_ms} ms latency each).`;
+  } catch (e) {
+    $("benchText").textContent = e.message;
+  } finally {
+    $("runBench").disabled = false;
+  }
+}
+
+async function init() {
+  initCharts();
+  $("delay").addEventListener("input", () => $("delayVal").textContent = $("delay").value + " ms");
+  $("refresh").addEventListener("click", refresh);
+  $("runBench").addEventListener("click", runBenchmark);
+  try {
+    const h = await (await fetch("/api/health")).json();
+    if (h.error) throw new Error(h.error + (h.hint ? "  \u2014 " + h.hint : ""));
+    regions = h.regions;
+    $("backendBadge").textContent = `Cassandra cluster connected \u00B7 ${h.regions.length} regions \u00B7 ${h.timeout_s}s timeout`;
+    for (const r of regions) {
+      const l = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = r;
+      l.append(cb, `Fail ${r} partition`);
+      $("downBox").appendChild(l);
+    }
+    $("downBox").addEventListener("change", refresh);
+    refresh();
+  } catch (e) {
+    $("backendBadge").textContent = "Cassandra unavailable";
+    showBanner([], e.message);
+  }
+}
+init();
+</script>
+</body>
+</html>
